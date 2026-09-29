@@ -42,6 +42,9 @@ internal class IjkPlayerEngine(
 
     private var source: PlaybackSource? = null
     private var nativeHttpEventCount: Int = 0
+    private var softwareVideoFallbackAttempted: Boolean = false
+    private var softwareVideoDecoderEnabled: Boolean = false
+    private var preserveDecoderModeForNextSource = false
 
     override val kind: PlayerEngineKind = PlayerEngineKind.IjkPlayer
     override val capabilities: EngineCapabilities = EngineCapabilities(subtitlesSupported = false)
@@ -181,6 +184,12 @@ internal class IjkPlayerEngine(
         }
 
     override fun setSource(source: PlaybackSource) {
+        val preserveDecoderMode = preserveDecoderModeForNextSource
+        preserveDecoderModeForNextSource = false
+        if (!preserveDecoderMode) {
+            softwareVideoFallbackAttempted = false
+            softwareVideoDecoderEnabled = false
+        }
         this.source = source
         nativeHttpEventCount = 0
         prepared = false
@@ -205,80 +214,87 @@ internal class IjkPlayerEngine(
         clearVisibleSeekPosition()
         updateState(Player.STATE_IDLE)
 
+        AppLog.i(
+            "IjkEngine",
+            "setSource decoder=${if (softwareVideoDecoderEnabled) "software" else "mediacodec"} " +
+                "fallbackAttempted=${if (softwareVideoFallbackAttempted) 1 else 0}",
+        )
         applyCommonOptions(p)
         runCatching { p.setSurface(videoSurface) }
         runCatching { p.setLooping(repeatModeInternal == Player.REPEAT_MODE_ONE) }
         runCatching { p.setSpeed(playbackSpeedInternal) }
         applyInitialPosition(p, dataSource)
 
-        try {
-            when (dataSource) {
-                is PlaybackSource.Live -> {
-                    val headers =
-                        IjkHttpHeaderBuilder.build(
-                            urlForCookie = dataSource.url,
-                            mediaRequestProfile = VideoMediaRequestProfile.WEB,
-                        )
-                    applyHttpOptions(p, headers)
-                    p.setDataSource(dataSource.url)
-                }
+        runCatching { setDataSource(p, dataSource) }.onFailure { t ->
+            listeners.forEach { it.onPlayerError(t) }
+        }
+    }
 
-                is PlaybackSource.Vod -> {
-                    when (val playable = dataSource.playable) {
-                        is Playable.Dash -> {
-                            val mpdFile =
-                                writeDashMpd(
-                                    playable,
-                                    durationMs = dataSource.durationMs,
-                                )
-                            if (BuildConfig.DEBUG) {
-                                val vLen = playable.videoUrl.length
-                                val aLen = playable.audioUrl.length
-                                AppLog.i(
+    private fun setDataSource(p: IjkMediaPlayer, dataSource: PlaybackSource) {
+        when (dataSource) {
+            is PlaybackSource.Live -> {
+                val headers =
+                    IjkHttpHeaderBuilder.build(
+                        urlForCookie = dataSource.url,
+                        mediaRequestProfile = VideoMediaRequestProfile.WEB,
+                    )
+                applyHttpOptions(p, headers)
+                p.setDataSource(dataSource.url)
+            }
+
+            is PlaybackSource.Vod -> {
+                when (val playable = dataSource.playable) {
+                    is Playable.Dash -> {
+                        val mpdFile =
+                            writeDashMpd(
+                                playable,
+                                durationMs = dataSource.durationMs,
+                            )
+                        if (BuildConfig.DEBUG) {
+                            val vLen = playable.videoUrl.length
+                            val aLen = playable.audioUrl.length
+                            AppLog.i(
+                                "IjkEngine",
+                                "dash source mode=direct mpd=${mpdFile.name} bytes=${mpdFile.length()} vUrlLen=$vLen aUrlLen=$aLen",
+                            )
+                            if (vLen > 1024 || aLen > 1024) {
+                                AppLog.w(
                                     "IjkEngine",
-                                    "dash source mode=direct mpd=${mpdFile.name} bytes=${mpdFile.length()} vUrlLen=$vLen aUrlLen=$aLen",
+                                    "DASH segment url is very long (>1024). If playback fails, consider ijkffmpeg dashdec long-url support.",
                                 )
-                                if (vLen > 1024 || aLen > 1024) {
-                                    AppLog.w(
-                                        "IjkEngine",
-                                        "DASH segment url is very long (>1024). If playback fails, consider ijkffmpeg dashdec long-url support.",
-                                    )
-                                }
                             }
-                            val headers =
-                                IjkHttpHeaderBuilder.build(
-                                    urlForCookie = playable.videoUrl,
-                                    mediaRequestProfile = playable.videoMediaRequestProfile,
-                                )
-                            applyHttpOptions(p, headers)
-                            // Use a plain file path to avoid ContentResolver/fd:// schemes.
-                            p.setDataSource(mpdFile.absolutePath)
                         }
+                        val headers =
+                            IjkHttpHeaderBuilder.build(
+                                urlForCookie = playable.videoUrl,
+                                mediaRequestProfile = playable.videoMediaRequestProfile,
+                            )
+                        applyHttpOptions(p, headers)
+                        // Use a plain file path to avoid ContentResolver/fd:// schemes.
+                        p.setDataSource(mpdFile.absolutePath)
+                    }
 
-                        is Playable.VideoOnly -> {
-                            val headers =
-                                IjkHttpHeaderBuilder.build(
-                                    urlForCookie = playable.videoUrl,
-                                    mediaRequestProfile = playable.videoMediaRequestProfile,
-                                )
-                            applyHttpOptions(p, headers)
-                            p.setDataSource(playable.videoUrl)
-                        }
+                    is Playable.VideoOnly -> {
+                        val headers =
+                            IjkHttpHeaderBuilder.build(
+                                urlForCookie = playable.videoUrl,
+                                mediaRequestProfile = playable.videoMediaRequestProfile,
+                            )
+                        applyHttpOptions(p, headers)
+                        p.setDataSource(playable.videoUrl)
+                    }
 
-                        is Playable.Progressive -> {
-                            val headers =
-                                IjkHttpHeaderBuilder.build(
-                                    urlForCookie = playable.url,
-                                    mediaRequestProfile = playable.mediaRequestProfile,
-                                )
-                            applyHttpOptions(p, headers)
-                            p.setDataSource(playable.url)
-                        }
+                    is Playable.Progressive -> {
+                        val headers =
+                            IjkHttpHeaderBuilder.build(
+                                urlForCookie = playable.url,
+                                mediaRequestProfile = playable.mediaRequestProfile,
+                            )
+                        applyHttpOptions(p, headers)
+                        p.setDataSource(playable.url)
                     }
                 }
             }
-        } catch (t: Throwable) {
-            listeners.forEach { it.onPlayerError(t) }
         }
     }
 
@@ -480,14 +496,18 @@ internal class IjkPlayerEngine(
             )
             p.setOnErrorListener(
                 IMediaPlayer.OnErrorListener { _, what, extra ->
-                    val e = IjkPlayerErrorException(what = what, extra = extra)
-                    prepared = false
-                    buffering = false
-                    preparing = false
-                    clearVisibleSeekPosition()
-                    updateState(Player.STATE_IDLE)
-                    listeners.forEach { it.onPlayerError(e) }
-                    true
+                    if (retryWithSoftwareVideoDecoder(what = what, extra = extra)) {
+                        true
+                    } else {
+                        val e = IjkPlayerErrorException(what = what, extra = extra)
+                        prepared = false
+                        buffering = false
+                        preparing = false
+                        clearVisibleSeekPosition()
+                        updateState(Player.STATE_IDLE)
+                        listeners.forEach { it.onPlayerError(e) }
+                        true
+                    }
                 },
             )
             p.setOnInfoListener(
@@ -554,11 +574,14 @@ internal class IjkPlayerEngine(
     }
 
     private fun applyCommonOptions(p: IjkMediaPlayer) {
-        // Playback flags.
-        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L) }
-        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L) }
-        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L) }
-        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L) }
+        // Start with hardware decoding. On old TV firmware the MediaCodec path can fail after
+        // audio has already started, so the error callback retries the same source in software.
+        val useMediaCodec = !softwareVideoDecoderEnabled
+        val mediaCodecFlag = if (useMediaCodec) 1L else 0L
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", mediaCodecFlag) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L) }
@@ -580,6 +603,28 @@ internal class IjkPlayerEngine(
             )
         }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "allowed_extensions", "ALL") }
+    }
+
+    private fun retryWithSoftwareVideoDecoder(what: Int, extra: Int): Boolean {
+        if (softwareVideoFallbackAttempted || softwareVideoDecoderEnabled) return false
+        val currentSource = source ?: return false
+        val resumePositionMs = currentPosition.coerceAtLeast(0L)
+        val retrySource =
+            when (currentSource) {
+                is PlaybackSource.Vod -> currentSource.copy(initialPositionMs = resumePositionMs.takeIf { it > 0L })
+                is PlaybackSource.Live -> currentSource
+            }
+
+        softwareVideoFallbackAttempted = true
+        softwareVideoDecoderEnabled = true
+        preserveDecoderModeForNextSource = true
+        AppLog.w(
+            "IjkEngine",
+            "video decoder fallback hardware->software what=$what extra=$extra positionMs=$resumePositionMs",
+        )
+        setSource(retrySource)
+        prepare()
+        return true
     }
 
     internal data class IjkDebugSnapshot(

@@ -1,6 +1,7 @@
 package blbl.cat3399.core.prefs
 
 import android.content.Context
+import android.os.Build
 import android.provider.Settings
 import blbl.cat3399.core.api.SponsorBlockCategories
 import blbl.cat3399.core.tv.isTvDevice
@@ -15,6 +16,9 @@ class AppPrefs(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("blbl_prefs", Context.MODE_PRIVATE)
     private val defaultPlayerTouchGesturesEnabled by lazy(LazyThreadSafetyMode.NONE) { !appContext.isTvDevice() }
+    private val defaultPlayerSeamlessQualitySwitchEnabled by lazy(LazyThreadSafetyMode.NONE) {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !appContext.isTvDevice()
+    }
 
     var disclaimerAccepted: Boolean
         get() = prefs.getBoolean(KEY_DISCLAIMER_ACCEPTED, false)
@@ -335,7 +339,7 @@ class AppPrefs(context: Context) {
         set(value) = prefs.edit().putString(KEY_PLAYER_CODEC, value).apply()
 
     var playerSeamlessQualitySwitchEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PLAYER_SEAMLESS_QUALITY_SWITCH_ENABLED, true)
+        get() = prefs.getBoolean(KEY_PLAYER_SEAMLESS_QUALITY_SWITCH_ENABLED, defaultPlayerSeamlessQualitySwitchEnabled)
         set(value) = prefs.edit().putBoolean(KEY_PLAYER_SEAMLESS_QUALITY_SWITCH_ENABLED, value).apply()
 
     var playerRenderViewType: String

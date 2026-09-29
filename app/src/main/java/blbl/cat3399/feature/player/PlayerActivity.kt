@@ -3777,12 +3777,18 @@ class PlayerActivity : BaseActivity() {
 
         val exo = (engine as? ExoPlayerEngine)?.exoPlayer
         if (engine.kind == PlayerEngineKind.ExoPlayer) {
+            // Keep the PlayerView in the layout so ijkAspect constraints remain valid when
+            // switching engines, but make sure its shutter/surface cannot cover IJK output.
+            binding.playerView.visibility = View.VISIBLE
             binding.playerView.player = exo
             return
         }
 
         // IJK mode: render via our own Surface/Texture.
         binding.playerView.player = null
+        // INVISIBLE preserves the PlayerView's measured bounds used by ijkAspect while
+        // removing its SurfaceView/shutter from the composited output.
+        binding.playerView.visibility = View.INVISIBLE
         binding.ijkAspect.visibility = View.VISIBLE
         binding.ijkAspect.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
         binding.ijkAspect.setAspectRatio(0f)
