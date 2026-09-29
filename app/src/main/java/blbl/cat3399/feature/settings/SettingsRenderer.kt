@@ -449,6 +449,12 @@ class SettingsRenderer(
                     SettingEntry(SettingId.PlayerRenderView, "渲染视图", SettingsText.renderViewText(prefs.playerRenderViewType), null),
                     SettingEntry(SettingId.PlayerEngineKind, "播放器内核", SettingsText.playerEngineText(prefs.playerEngineKind), null),
                     SettingEntry(
+                        SettingId.PlayerIjkDecoderMode,
+                        "IJK 解码方式",
+                        SettingsText.playerIjkDecoderModeText(prefs.playerIjkDecoderMode),
+                        "自动模式会在硬件解码无视频首帧时回退到软件解码",
+                    ),
+                    SettingEntry(
                         SettingId.PlayerCustomShortcuts,
                         "自定义播放快捷键",
                         prefs.playerCustomShortcuts.let { if (it.isEmpty()) "未设置" else "已设置 ${it.size} 个" },

@@ -383,6 +383,13 @@ class AppPrefs(context: Context) {
             prefs.edit().putString(KEY_PLAYER_ENGINE_KIND, normalized).apply()
         }
 
+    var playerIjkDecoderMode: String
+        get() {
+            val raw = prefs.getString(KEY_PLAYER_IJK_DECODER_MODE, PLAYER_IJK_DECODER_AUTO) ?: PLAYER_IJK_DECODER_AUTO
+            return normalizePlayerIjkDecoderMode(raw)
+        }
+        set(value) = prefs.edit().putString(KEY_PLAYER_IJK_DECODER_MODE, normalizePlayerIjkDecoderMode(value)).apply()
+
     var playerStyle: String
         get() {
             val raw = prefs.getString(KEY_PLAYER_STYLE, PLAYER_STYLE_FULLSCREEN) ?: PLAYER_STYLE_FULLSCREEN
@@ -1097,6 +1104,7 @@ class AppPrefs(context: Context) {
         private const val KEY_PLAYER_SEAMLESS_QUALITY_SWITCH_ENABLED = "player_seamless_quality_switch_enabled"
         private const val KEY_PLAYER_RENDER_VIEW = "player_render_view"
         private const val KEY_PLAYER_ENGINE_KIND = "player_engine_kind"
+        private const val KEY_PLAYER_IJK_DECODER_MODE = "player_ijk_decoder_mode"
         private const val KEY_PLAYER_STYLE = "player_style"
         private const val KEY_PLAYER_AUDIO_ID = "player_audio_id"
         private const val KEY_PLAYER_CDN_PREFERENCE = "player_cdn_preference"
@@ -1240,6 +1248,17 @@ class AppPrefs(context: Context) {
 
         const val PLAYER_ENGINE_EXO = "exoplayer"
         const val PLAYER_ENGINE_IJK = "ijkplayer"
+
+        const val PLAYER_IJK_DECODER_AUTO = "auto"
+        const val PLAYER_IJK_DECODER_HARDWARE = "hardware"
+        const val PLAYER_IJK_DECODER_SOFTWARE = "software"
+
+        fun normalizePlayerIjkDecoderMode(value: String?): String =
+            when (value?.trim()) {
+                PLAYER_IJK_DECODER_HARDWARE -> PLAYER_IJK_DECODER_HARDWARE
+                PLAYER_IJK_DECODER_SOFTWARE -> PLAYER_IJK_DECODER_SOFTWARE
+                else -> PLAYER_IJK_DECODER_AUTO
+            }
 
         const val PLAYER_STYLE_FULLSCREEN = "fullscreen"
         const val PLAYER_STYLE_HD = "hd"

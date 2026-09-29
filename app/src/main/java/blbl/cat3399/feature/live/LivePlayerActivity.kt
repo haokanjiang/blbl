@@ -308,7 +308,7 @@ class LivePlayerActivity : BaseActivity() {
         val engine: BlblPlayerEngine =
             when (engineKind) {
                 PlayerEngineKind.IjkPlayer -> {
-                    IjkPlayerEngine(context = this)
+                    IjkPlayerEngine(context = this, decoderMode = prefs.playerIjkDecoderMode)
                 }
                 PlayerEngineKind.ExoPlayer ->
                     ExoPlayerEngine(

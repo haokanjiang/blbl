@@ -70,6 +70,7 @@ enum class SettingId(
     PlayerPreferredCodec("player_preferred_codec"),
     PlayerRenderView("player_render_view"),
     PlayerEngineKind("player_engine_kind"),
+    PlayerIjkDecoderMode("player_ijk_decoder_mode"),
     PlayerAudioBalance("player_audio_balance"),
     PlayerOsdButtons("player_osd_buttons"),
     PlayerCustomShortcuts("player_custom_shortcuts"),

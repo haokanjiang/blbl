@@ -1442,6 +1442,25 @@ class SettingsInteractionHandler(
                 }
             }
 
+            SettingId.PlayerIjkDecoderMode -> {
+                val options =
+                    listOf(
+                        AppPrefs.PLAYER_IJK_DECODER_AUTO to "自动回退",
+                        AppPrefs.PLAYER_IJK_DECODER_HARDWARE to "硬件解码",
+                        AppPrefs.PLAYER_IJK_DECODER_SOFTWARE to "软件解码",
+                    )
+                showChoiceDialog(
+                    title = "IJK 解码方式",
+                    items = options.map { it.second },
+                    current = SettingsText.playerIjkDecoderModeText(prefs.playerIjkDecoderMode),
+                ) { selected ->
+                    val value = options.firstOrNull { it.second == selected }?.first ?: AppPrefs.PLAYER_IJK_DECODER_AUTO
+                    prefs.playerIjkDecoderMode = value
+                    AppToast.show(activity, "IJK 解码方式：$selected（下次播放生效）")
+                    renderer.refreshSection(entry.id)
+                }
+            }
+
             SettingId.PlayerAudioBalance -> {
                 val options = AudioBalanceLevel.ordered
                 val current = AudioBalanceLevel.fromPrefValue(prefs.playerAudioBalanceLevel)

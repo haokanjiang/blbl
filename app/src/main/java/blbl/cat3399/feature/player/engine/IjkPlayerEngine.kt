@@ -13,6 +13,7 @@ import blbl.cat3399.BuildConfig
 import blbl.cat3399.core.api.video.VideoMediaRequestProfile
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.net.BiliClient
+import blbl.cat3399.core.prefs.AppPrefs
 import blbl.cat3399.feature.player.Playable
 import tv.danmaku.ijk.media.player.IMediaPlayer
 import tv.danmaku.ijk.media.player.IjkMediaPlayer
@@ -24,8 +25,10 @@ import java.util.concurrent.CopyOnWriteArraySet
 
 internal class IjkPlayerEngine(
     context: Context,
+    decoderMode: String = AppPrefs.PLAYER_IJK_DECODER_AUTO,
 ) : BlblPlayerEngine {
     private val appContext: Context = context.applicationContext
+    private val configuredDecoderMode = AppPrefs.normalizePlayerIjkDecoderMode(decoderMode)
     private val listeners: MutableSet<BlblPlayerEngine.Listener> = CopyOnWriteArraySet()
 
     private var ijk: IjkMediaPlayer? = null
@@ -198,8 +201,8 @@ internal class IjkPlayerEngine(
         val preserveDecoderMode = preserveDecoderModeForNextSource
         preserveDecoderModeForNextSource = false
         if (!preserveDecoderMode) {
-            softwareVideoFallbackAttempted = false
-            softwareVideoDecoderEnabled = false
+            softwareVideoFallbackAttempted = configuredDecoderMode != AppPrefs.PLAYER_IJK_DECODER_AUTO
+            softwareVideoDecoderEnabled = configuredDecoderMode == AppPrefs.PLAYER_IJK_DECODER_SOFTWARE
         }
         this.source = source
         nativeHttpEventCount = 0
@@ -227,7 +230,7 @@ internal class IjkPlayerEngine(
 
         AppLog.i(
             "IjkEngine",
-            "setSource decoder=${if (softwareVideoDecoderEnabled) "software" else "mediacodec"} " +
+            "setSource decoder=${if (softwareVideoDecoderEnabled) "software" else "mediacodec"} mode=$configuredDecoderMode " +
                 "fallbackAttempted=${if (softwareVideoFallbackAttempted) 1 else 0}",
         )
         applyCommonOptions(p, dataSource)
@@ -678,6 +681,7 @@ internal class IjkPlayerEngine(
     }
 
     private fun retryWithSoftwareVideoDecoder(what: Int, extra: Int, reason: String): Boolean {
+        if (configuredDecoderMode != AppPrefs.PLAYER_IJK_DECODER_AUTO) return false
         if (softwareVideoFallbackAttempted || softwareVideoDecoderEnabled) return false
         val currentSource = source ?: return false
         val resumePositionMs = currentPosition.coerceAtLeast(0L)

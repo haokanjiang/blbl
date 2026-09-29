@@ -235,6 +235,13 @@ object SettingsText {
             else -> "ExoPlayer"
         }
 
+    fun playerIjkDecoderModeText(code: String): String =
+        when (code) {
+            blbl.cat3399.core.prefs.AppPrefs.PLAYER_IJK_DECODER_HARDWARE -> "硬件解码"
+            blbl.cat3399.core.prefs.AppPrefs.PLAYER_IJK_DECODER_SOFTWARE -> "软件解码"
+            else -> "自动回退"
+        }
+
     fun downKeyOsdFocusTargetText(code: String): String =
         when (code) {
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_PREV -> "上一个"
