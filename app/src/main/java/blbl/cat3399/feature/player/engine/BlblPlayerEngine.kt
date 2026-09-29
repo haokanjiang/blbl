@@ -49,6 +49,10 @@ internal interface BlblPlayerEngine {
     var repeatMode: Int
 
     fun setSource(source: PlaybackSource)
+
+    /** Retry the current source with software video decoding when supported by the engine. */
+    fun fallbackToSoftwareVideoDecoder(): Boolean = false
+
     fun prepare()
     fun play()
     fun pause()

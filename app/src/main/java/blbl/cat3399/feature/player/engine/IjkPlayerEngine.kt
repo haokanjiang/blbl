@@ -1,7 +1,11 @@
 package blbl.cat3399.feature.player.engine
 
 import android.content.Context
+import android.media.MediaCodecList
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Surface
 import androidx.media3.common.Player
@@ -45,6 +49,9 @@ internal class IjkPlayerEngine(
     private var softwareVideoFallbackAttempted: Boolean = false
     private var softwareVideoDecoderEnabled: Boolean = false
     private var preserveDecoderModeForNextSource = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var firstFrameWatchdog: Runnable? = null
+    private var firstFrameRendered: Boolean = false
 
     override val kind: PlayerEngineKind = PlayerEngineKind.IjkPlayer
     override val capabilities: EngineCapabilities = EngineCapabilities(subtitlesSupported = false)
@@ -184,6 +191,8 @@ internal class IjkPlayerEngine(
         }
 
     override fun setSource(source: PlaybackSource) {
+        cancelFirstFrameWatchdog()
+        firstFrameRendered = false
         val preserveDecoderMode = preserveDecoderModeForNextSource
         preserveDecoderModeForNextSource = false
         if (!preserveDecoderMode) {
@@ -219,7 +228,7 @@ internal class IjkPlayerEngine(
             "setSource decoder=${if (softwareVideoDecoderEnabled) "software" else "mediacodec"} " +
                 "fallbackAttempted=${if (softwareVideoFallbackAttempted) 1 else 0}",
         )
-        applyCommonOptions(p)
+        applyCommonOptions(p, dataSource)
         runCatching { p.setSurface(videoSurface) }
         runCatching { p.setLooping(repeatModeInternal == Player.REPEAT_MODE_ONE) }
         runCatching { p.setSpeed(playbackSpeedInternal) }
@@ -303,6 +312,14 @@ internal class IjkPlayerEngine(
         startPrepareIfPossible(reason = "explicit_prepare")
     }
 
+    override fun fallbackToSoftwareVideoDecoder(): Boolean {
+        return retryWithSoftwareVideoDecoder(
+            what = 0,
+            extra = 0,
+            reason = "first_frame_timeout",
+        )
+    }
+
     private fun applyInitialPosition(p: IjkMediaPlayer, source: PlaybackSource) {
         val vod = source as? PlaybackSource.Vod ?: return
         val positionMs = vod.initialPositionMs?.takeIf { it > 0L } ?: return
@@ -332,6 +349,7 @@ internal class IjkPlayerEngine(
 
     override fun stop() {
         val p = ijk ?: return
+        cancelFirstFrameWatchdog()
         runCatching { p.stop() }
         prepared = false
         buffering = false
@@ -343,6 +361,7 @@ internal class IjkPlayerEngine(
     }
 
     override fun release() {
+        cancelFirstFrameWatchdog()
         source = null
         playWhenReadyInternal = false
         prepared = false
@@ -422,7 +441,9 @@ internal class IjkPlayerEngine(
             runCatching {
                 if (playWhenReadyInternal) {
                     p.start()
+                    armFirstFrameWatchdog(p)
                 } else {
+                    cancelFirstFrameWatchdog()
                     p.pause()
                 }
             }.onFailure { AppLog.w("IjkEngine", "sync playWhenReady failed", it) }
@@ -496,7 +517,7 @@ internal class IjkPlayerEngine(
             )
             p.setOnErrorListener(
                 IMediaPlayer.OnErrorListener { _, what, extra ->
-                    if (retryWithSoftwareVideoDecoder(what = what, extra = extra)) {
+                    if (retryWithSoftwareVideoDecoder(what = what, extra = extra, reason = "media_error")) {
                         true
                     } else {
                         val e = IjkPlayerErrorException(what = what, extra = extra)
@@ -525,6 +546,8 @@ internal class IjkPlayerEngine(
                         }
 
                         IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> {
+                            firstFrameRendered = true
+                            cancelFirstFrameWatchdog()
                             if (visibleSeekClearsOnFirstFrame) clearVisibleSeekPosition()
                             listeners.forEach { it.onRenderedFirstFrame() }
                         }
@@ -573,15 +596,40 @@ internal class IjkPlayerEngine(
         }
     }
 
-    private fun applyCommonOptions(p: IjkMediaPlayer) {
-        // Start with hardware decoding. On old TV firmware the MediaCodec path can fail after
-        // audio has already started, so the error callback retries the same source in software.
+    private fun applyCommonOptions(p: IjkMediaPlayer, source: PlaybackSource) {
+        // Mirror the official IJK strategy: select a concrete codec name, enable MediaCodec, and
+        // let the native decoder switch to FFmpeg when MediaCodec blocks or fails.
         val useMediaCodec = !softwareVideoDecoderEnabled
         val mediaCodecFlag = if (useMediaCodec) 1L else 0L
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", mediaCodecFlag) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", mediaCodecFlag) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", mediaCodecFlag) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-av1", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-decoder-switch", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-decoder-block-detect", mediaCodecFlag) }
+        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-retry-check-codecsize", mediaCodecFlag) }
+        if (useMediaCodec) {
+            val codecNames =
+                VIDEO_CODEC_MIME_TYPES.mapNotNull { mime ->
+                    selectBestCodecName(mime)?.let { mime to it }
+                }.toMap()
+            codecNames["video/avc"]?.let { codecName ->
+                runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-default-avc-name", codecName) }
+            }
+            codecNames["video/hevc"]?.let { codecName ->
+                runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-default-hevc-name", codecName) }
+            }
+            codecNames["video/av01"]?.let { codecName ->
+                runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-default-av1-name", codecName) }
+            }
+            videoMimeType(source)?.let { mime ->
+                codecNames[mime]?.let { codecName ->
+                    runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-default-name", codecName) }
+                    AppLog.i("IjkEngine", "codec select mime=$mime name=$codecName")
+                }
+            }
+        }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L) }
@@ -605,7 +653,7 @@ internal class IjkPlayerEngine(
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "allowed_extensions", "ALL") }
     }
 
-    private fun retryWithSoftwareVideoDecoder(what: Int, extra: Int): Boolean {
+    private fun retryWithSoftwareVideoDecoder(what: Int, extra: Int, reason: String): Boolean {
         if (softwareVideoFallbackAttempted || softwareVideoDecoderEnabled) return false
         val currentSource = source ?: return false
         val resumePositionMs = currentPosition.coerceAtLeast(0L)
@@ -620,11 +668,67 @@ internal class IjkPlayerEngine(
         preserveDecoderModeForNextSource = true
         AppLog.w(
             "IjkEngine",
-            "video decoder fallback hardware->software what=$what extra=$extra positionMs=$resumePositionMs",
+            "video decoder fallback hardware->software reason=$reason what=$what extra=$extra positionMs=$resumePositionMs",
         )
         setSource(retrySource)
         prepare()
         return true
+    }
+
+    private fun armFirstFrameWatchdog(p: IjkMediaPlayer) {
+        cancelFirstFrameWatchdog()
+        if (!playWhenReadyInternal || firstFrameRendered || softwareVideoDecoderEnabled) return
+        val watchdog =
+            Runnable {
+                if (ijk !== p || !prepared || !playWhenReadyInternal || firstFrameRendered) return@Runnable
+                AppLog.w("IjkEngine", "first frame timeout; request decoder fallback")
+                fallbackToSoftwareVideoDecoder()
+            }
+        firstFrameWatchdog = watchdog
+        mainHandler.postDelayed(watchdog, FIRST_FRAME_TIMEOUT_MS)
+    }
+
+    private fun cancelFirstFrameWatchdog() {
+        firstFrameWatchdog?.let(mainHandler::removeCallbacks)
+        firstFrameWatchdog = null
+    }
+
+    private fun videoMimeType(source: PlaybackSource): String? {
+        val codecid =
+            when (val playable = (source as? PlaybackSource.Vod)?.playable) {
+                is Playable.Dash -> playable.codecid
+                is Playable.VideoOnly -> playable.codecid
+                else -> null
+            }
+        return when (codecid) {
+            7 -> "video/avc"
+            12 -> "video/hevc"
+            13 -> "video/av01"
+            else -> null
+        }
+    }
+
+    private fun selectBestCodecName(mime: String): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return null
+        return runCatching {
+            val infos = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+            val candidates =
+                infos.filter { info ->
+                    !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+                }
+            candidates.firstOrNull { !isLikelySoftwareCodec(it.name) }?.name
+                ?: candidates.firstOrNull()?.name
+        }.getOrNull()
+    }
+
+    private fun isLikelySoftwareCodec(name: String): Boolean {
+        val normalized = name.lowercase(Locale.US)
+        return normalized.startsWith("omx.google.") ||
+            normalized.startsWith("c2.android.") ||
+            normalized.startsWith("c2.google.") ||
+            normalized.contains(".sw.") ||
+            normalized.contains("software") ||
+            normalized.contains("ffmpeg")
     }
 
     internal data class IjkDebugSnapshot(
@@ -822,6 +926,8 @@ internal class IjkPlayerEngine(
     ) : RuntimeException("IjkMediaPlayer error what=$what extra=$extra")
 
     private companion object {
+        private val VIDEO_CODEC_MIME_TYPES = listOf("video/avc", "video/hevc", "video/av01")
+        private const val FIRST_FRAME_TIMEOUT_MS: Long = 15_000L
         private const val MAX_BUFFERED_FORWARD_ESTIMATE_MS: Long = 5 * 60_000L
         private const val VISIBLE_SEEK_POSITION_TIMEOUT_MS: Long = 10_000L
     }
