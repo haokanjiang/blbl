@@ -52,6 +52,7 @@ internal class IjkPlayerEngine(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var firstFrameWatchdog: Runnable? = null
     private var firstFrameRendered: Boolean = false
+    private var audioRenderingStarted: Boolean = false
 
     override val kind: PlayerEngineKind = PlayerEngineKind.IjkPlayer
     override val capabilities: EngineCapabilities = EngineCapabilities(subtitlesSupported = false)
@@ -193,6 +194,7 @@ internal class IjkPlayerEngine(
     override fun setSource(source: PlaybackSource) {
         cancelFirstFrameWatchdog()
         firstFrameRendered = false
+        audioRenderingStarted = false
         val preserveDecoderMode = preserveDecoderModeForNextSource
         preserveDecoderModeForNextSource = false
         if (!preserveDecoderMode) {
@@ -441,7 +443,16 @@ internal class IjkPlayerEngine(
             runCatching {
                 if (playWhenReadyInternal) {
                     p.start()
-                    armFirstFrameWatchdog(p)
+                    armFirstFrameWatchdog(
+                        p = p,
+                        timeoutMs =
+                            if (audioRenderingStarted) {
+                                AUDIO_FIRST_FRAME_TIMEOUT_MS
+                            } else {
+                                FIRST_FRAME_TIMEOUT_MS
+                            },
+                        reason = "play_start",
+                    )
                 } else {
                     cancelFirstFrameWatchdog()
                     p.pause()
@@ -550,6 +561,19 @@ internal class IjkPlayerEngine(
                             cancelFirstFrameWatchdog()
                             if (visibleSeekClearsOnFirstFrame) clearVisibleSeekPosition()
                             listeners.forEach { it.onRenderedFirstFrame() }
+                        }
+
+                        IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START -> {
+                            // Some TV MediaCodec implementations start audio successfully but
+                            // never output a video buffer or report a decoder error. Once audio is
+                            // audible, give the video decoder a short grace period before forcing
+                            // the FFmpeg/software retry.
+                            audioRenderingStarted = true
+                            armFirstFrameWatchdog(
+                                p = p,
+                                timeoutMs = AUDIO_FIRST_FRAME_TIMEOUT_MS,
+                                reason = "audio_rendering_start",
+                            )
                         }
 
                         IMediaPlayer.MEDIA_INFO_MEDIA_ACCURATE_SEEK_COMPLETE,
@@ -675,17 +699,29 @@ internal class IjkPlayerEngine(
         return true
     }
 
-    private fun armFirstFrameWatchdog(p: IjkMediaPlayer) {
+    private fun armFirstFrameWatchdog(
+        p: IjkMediaPlayer,
+        timeoutMs: Long,
+        reason: String,
+    ) {
         cancelFirstFrameWatchdog()
-        if (!playWhenReadyInternal || firstFrameRendered || softwareVideoDecoderEnabled) return
+        if (!playWhenReadyInternal || firstFrameRendered || softwareVideoDecoderEnabled) {
+            AppLog.d(
+                "IjkEngine",
+                "first frame watchdog skipped reason=$reason playWhenReady=${if (playWhenReadyInternal) 1 else 0} " +
+                    "rendered=${if (firstFrameRendered) 1 else 0} software=${if (softwareVideoDecoderEnabled) 1 else 0}",
+            )
+            return
+        }
+        AppLog.d("IjkEngine", "first frame watchdog armed timeoutMs=$timeoutMs reason=$reason")
         val watchdog =
             Runnable {
                 if (ijk !== p || !prepared || !playWhenReadyInternal || firstFrameRendered) return@Runnable
-                AppLog.w("IjkEngine", "first frame timeout; request decoder fallback")
+                AppLog.w("IjkEngine", "first frame timeout; request decoder fallback reason=$reason")
                 fallbackToSoftwareVideoDecoder()
             }
         firstFrameWatchdog = watchdog
-        mainHandler.postDelayed(watchdog, FIRST_FRAME_TIMEOUT_MS)
+        mainHandler.postDelayed(watchdog, timeoutMs)
     }
 
     private fun cancelFirstFrameWatchdog() {
@@ -928,6 +964,7 @@ internal class IjkPlayerEngine(
     private companion object {
         private val VIDEO_CODEC_MIME_TYPES = listOf("video/avc", "video/hevc", "video/av01")
         private const val FIRST_FRAME_TIMEOUT_MS: Long = 15_000L
+        private const val AUDIO_FIRST_FRAME_TIMEOUT_MS: Long = 5_000L
         private const val MAX_BUFFERED_FORWARD_ESTIMATE_MS: Long = 5 * 60_000L
         private const val VISIBLE_SEEK_POSITION_TIMEOUT_MS: Long = 10_000L
     }
